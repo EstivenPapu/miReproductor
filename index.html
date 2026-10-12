@@ -50,6 +50,7 @@ li{display:flex;align-items:stretch;border-bottom:1px solid var(--line)}
 .del svg{width:22px;height:22px;fill:currentColor}
 .del:focus-visible{outline:3px solid var(--accent);outline-offset:-3px}
 .track[aria-current="true"]{background:var(--surface);font-weight:800;border-left:4px solid var(--accent)}
+.add.main{border-style:solid;border-color:var(--accent)}
 .empty{color:var(--muted);text-align:center;margin:8px 0}
 .hidden{display:none}
 </style>
@@ -73,7 +74,9 @@ li{display:flex;align-items:stretch;border-bottom:1px solid var(--line)}
     <button class="ic" id="next" aria-label="Siguiente"><svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM4 6l10.5 6L4 18z"/></svg></button>
   </div>
 
-  <button class="add" id="add">Agregar canciones</button>
+  <button class="add main" id="folder-btn">Buscar música en una carpeta</button>
+  <button class="add" id="add">Agregar canciones sueltas</button>
+  <input id="folder" type="file" webkitdirectory multiple class="hidden">
   <input id="files" type="file" accept="audio/*" multiple class="hidden">
   <ul id="list"></ul>
   <p class="empty" id="empty">Todavía no hay canciones en la lista.</p>
@@ -161,23 +164,75 @@ function toggle() {
 }
 
 $('#add').onclick = () => $('#files').click();
-$('#files').onchange = async e => {
-  const files = [...e.target.files];
-  e.target.value = '';
+const AUDIO = /\.(mp3|m4a|aac|flac|ogg|oga|opus|wav|weba|amr)$/i;
+const MB = 1048576;
+let importing = false;
+
+async function importFiles(all) {
+  if (importing) return;
+  const audioFiles = all.filter(f => (f.type && f.type.startsWith('audio/')) || AUDIO.test(f.name));
+  if (!audioFiles.length) { $('#sub').textContent = 'No encontré canciones en lo que elegiste.'; return; }
+  const seen = new Set(tracks.map(t => t.name + '|' + t.size));
+  const fresh = audioFiles.filter(f => {
+    const k = clean(f.name) + '|' + f.size;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  const skipped = audioFiles.length - fresh.length;
+  if (!fresh.length) { $('#sub').textContent = 'Todas esas canciones ya estaban en tu app.'; return; }
+
+  const total = fresh.reduce((n, f) => n + f.size, 0);
+  const est = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : null;
+  if (est && est.quota && total > est.quota - est.usage) {
+    alert('No hay espacio suficiente: necesitas ' + Math.ceil(total / MB) + ' MB y quedan ' + Math.floor((est.quota - est.usage) / MB) + ' MB.');
+    return;
+  }
+  if ((fresh.length > 20 || total > 200 * MB) &&
+      !confirm('Se van a copiar ' + fresh.length + ' canciones (' + Math.ceil(total / MB) + ' MB) dentro de la app. ¿Continuar?')) return;
+
+  importing = true;
   const first = tracks.length;
-  for (const f of files) {
+  let n = 0, failed = 0;
+  for (const f of fresh) {
     const name = clean(f.name);
-    if (tracks.some(t => t.name === name && t.size === f.size)) continue;
+    $('#sub').textContent = 'Importando ' + (++n) + ' de ' + fresh.length + '…';
     try {
       const id = await dbAdd({ name, size: f.size, blob: f, added: Date.now() });
       tracks.push({ id, name, size: f.size, url: URL.createObjectURL(f) });
-    } catch (err) {
-      $('#sub').textContent = 'No se pudo guardar "' + name + '". Puede que no haya espacio.';
-    }
+    } catch (err) { failed++; }
   }
+  importing = false;
   render();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+  const msg = (n - failed) + ' canciones nuevas' + (skipped ? ', ' + skipped + ' ya estaban' : '') + (failed ? ', ' + failed + ' fallaron' : '') + '.';
   if (cur < 0 && tracks.length > first) play(first);
+  $('#sub').textContent = msg;
+}
+
+async function walk(dir, out) {
+  for await (const [name, h] of dir.entries()) {
+    if (h.kind === 'file') { if (AUDIO.test(name)) out.push(await h.getFile()); }
+    else await walk(h, out);
+  }
+}
+
+$('#files').onchange = e => { const f = [...e.target.files]; e.target.value = ''; importFiles(f); };
+$('#folder').onchange = e => { const f = [...e.target.files]; e.target.value = ''; importFiles(f); };
+$('#folder-btn').onclick = async () => {
+  if (window.showDirectoryPicker) {
+    try {
+      const dir = await showDirectoryPicker({ mode: 'read' });
+      $('#sub').textContent = 'Buscando canciones…';
+      const out = [];
+      await walk(dir, out);
+      await importFiles(out);
+    } catch (err) {
+      if (err.name !== 'AbortError') $('#sub').textContent = 'No se pudo leer la carpeta.';
+    }
+  } else {
+    $('#folder').click();
+  }
 };
 
 async function remove(i) {
