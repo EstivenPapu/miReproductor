@@ -1,5 +1,5 @@
 // Si cambias algo en la app, sube el número de versión para que se actualice.
-const CACHE = 'mi-reproductor-v3';
+const CACHE = 'mi-reproductor-v4';
 const FILES = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {

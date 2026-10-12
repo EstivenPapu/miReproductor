@@ -51,6 +51,28 @@ li{display:flex;align-items:stretch;border-bottom:1px solid var(--line)}
 .del:focus-visible{outline:3px solid var(--accent);outline-offset:-3px}
 .track[aria-current="true"]{background:var(--surface);font-weight:800;border-left:4px solid var(--accent)}
 .add.main{border-style:solid;border-color:var(--accent)}
+.chips{display:flex;gap:8px;overflow-x:auto;margin:0 -20px 8px;padding:0 20px 8px}
+.chip{flex:none;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:8px 14px;border-radius:999px;border:1px solid var(--line);background:transparent}
+.chip[aria-pressed="true"]{background:var(--accent);color:var(--on-accent);border-color:var(--accent);font-weight:600}
+.chip-new{border-style:dashed}
+.chip:focus-visible,.sm:focus-visible,.btn:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.plbar{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:4px 0 12px}
+.plbar strong{font-size:1.05rem;overflow-wrap:anywhere}
+.acts{display:flex;gap:8px;flex-wrap:wrap}
+.sm{padding:8px 12px;border-radius:10px;border:1px solid var(--line);background:transparent;font-size:.9rem}
+.addpl{color:var(--accent)}
+.muted{color:var(--muted)}
+dialog{border:0;padding:0;margin:auto auto 0;width:100%;max-width:520px;max-height:80vh;overflow:auto;border-radius:20px 20px 0 0;background:var(--surface);color:var(--text)}
+dialog::backdrop{background:rgba(10,12,30,.55)}
+.sheet-in{padding:20px 20px calc(20px + env(safe-area-inset-bottom,0px))}
+.sheet-in h2{font-size:1.1rem;margin:0 0 4px}
+.pick{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.pick input{width:22px;height:22px;flex:none;accent-color:var(--accent)}
+.newrow{display:flex;gap:8px;margin:16px 0}
+.newrow input{flex:1;min-width:0;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:inherit;font:inherit}
+.btn{padding:12px 14px;border-radius:10px;border:0;background:var(--accent);color:var(--on-accent);font-weight:600}
+.btn.alt{background:transparent;border:1px solid var(--line);color:inherit;width:100%}
+
 .empty{color:var(--muted);text-align:center;margin:8px 0}
 .hidden{display:none}
 </style>
@@ -78,32 +100,61 @@ li{display:flex;align-items:stretch;border-bottom:1px solid var(--line)}
   <button class="add" id="add">Agregar canciones sueltas</button>
   <input id="folder" type="file" webkitdirectory multiple class="hidden">
   <input id="files" type="file" accept="audio/*" multiple class="hidden">
+  <div class="chips" id="chips" role="group" aria-label="Listas de reproducción"></div>
+  <div class="plbar hidden" id="plbar">
+    <strong id="plname"></strong>
+    <div class="acts">
+      <button class="sm" id="pl-play">Reproducir</button>
+      <button class="sm" id="pl-rename">Renombrar</button>
+      <button class="sm" id="pl-del">Borrar lista</button>
+    </div>
+  </div>
   <ul id="list"></ul>
   <p class="empty" id="empty">Todavía no hay canciones en la lista.</p>
 </main>
 
+<dialog id="sheet" aria-labelledby="sheet-title">
+  <div class="sheet-in">
+    <h2 id="sheet-title">Agregar a una lista</h2>
+    <p class="muted" id="sheet-song"></p>
+    <div id="sheet-lists"></div>
+    <div class="newrow">
+      <input id="newname" type="text" maxlength="40" placeholder="Nombre de la lista nueva" aria-label="Nombre de la lista nueva">
+      <button class="btn" id="newbtn">Crear y agregar</button>
+    </div>
+    <button class="btn alt" id="sheet-close">Listo</button>
+  </div>
+</dialog>
 <script>
 const $ = s => document.querySelector(s);
 const audio = new Audio();
 let tracks = [], cur = -1;
 
-// Base de datos (IndexedDB): guarda las canciones en el celular
-const STORE = 'songs';
+// Base de datos (IndexedDB): canciones y listas de reproducción
+const STORE = 'songs', PL = 'playlists';
 let dbp;
 const db = () => dbp || (dbp = new Promise((res, rej) => {
-  const r = indexedDB.open('mi-reproductor', 1);
-  r.onupgradeneeded = () => r.result.createObjectStore(STORE, { keyPath: 'id', autoIncrement: true });
+  const r = indexedDB.open('mi-reproductor', 2);
+  r.onupgradeneeded = () => {
+    for (const n of [STORE, PL]) {
+      if (!r.result.objectStoreNames.contains(n)) r.result.createObjectStore(n, { keyPath: 'id', autoIncrement: true });
+    }
+  };
   r.onsuccess = () => res(r.result);
   r.onerror = () => rej(r.error);
 }));
-const run = async (mode, fn) => {
+const run = async (store, mode, fn) => {
   const d = await db();
-  const req = fn(d.transaction(STORE, mode).objectStore(STORE));
+  const req = fn(d.transaction(store, mode).objectStore(store));
   return new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
 };
-const dbAll = () => run('readonly', s => s.getAll());
-const dbAdd = rec => run('readwrite', s => s.add(rec));
-const dbDel = id => run('readwrite', s => s.delete(id));
+const dbAll = (st = STORE) => run(st, 'readonly', s => s.getAll());
+const dbAdd = (rec, st = STORE) => run(st, 'readwrite', s => s.add(rec));
+const dbDel = (id, st = STORE) => run(st, 'readwrite', s => s.delete(id));
+const dbPut = (rec, st = PL) => run(st, 'readwrite', s => s.put(rec));
+
+// Estado de las listas
+let playlists = [], view = 'all', queue = [], sheetTrackId = null;
 
 const ICON_PLAY = '<path d="M8 5v14l11-7z"/>';
 const ICON_PAUSE = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
@@ -115,26 +166,194 @@ const fmt = t => {
 };
 const clean = n => n.replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ');
 
+const plById = id => playlists.find(p => p.id === id);
+const nameOk = n => (n || '').trim().slice(0, 40);
+const nameTaken = (n, exceptId) => playlists.some(p => p.id !== exceptId && p.name.toLowerCase() === n.toLowerCase());
+const P_PLUS = 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z';
+const P_TRASH = 'M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6zM19 4h-3.5l-1-1h-5l-1 1H5v2h14z';
+const P_X = 'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z';
+
+const iconBtn = (cls, label, path, fn) => {
+  const b = document.createElement('button');
+  b.className = cls;
+  b.setAttribute('aria-label', label);
+  b.innerHTML = '<svg viewBox="0 0 24 24"><path d="' + path + '"/></svg>';
+  b.onclick = fn;
+  return b;
+};
+
+function inView() {
+  const pl = plById(view);
+  if (!pl) return tracks.map((t, i) => i);
+  return pl.songIds.map(id => tracks.findIndex(t => t.id === id)).filter(i => i >= 0);
+}
+
+function renderChips() {
+  const box = $('#chips');
+  const sl = box.scrollLeft;
+  box.innerHTML = '';
+  const mk = (label, active, fn, extra) => {
+    const b = document.createElement('button');
+    b.className = 'chip' + (extra ? ' ' + extra : '');
+    b.textContent = label;
+    b.setAttribute('aria-pressed', String(active));
+    b.onclick = fn;
+    box.appendChild(b);
+  };
+  mk('Todas (' + tracks.length + ')', view === 'all', () => { view = 'all'; render(); });
+  playlists.forEach(p => mk(p.name, view === p.id, () => { view = p.id; render(); }));
+  mk('+ Nueva lista', false, async () => {
+    const n = nameOk(prompt('Nombre de la lista nueva'));
+    if (!n) return;
+    if (nameTaken(n)) { alert('Ya existe una lista con ese nombre.'); return; }
+    try { const pl = await createPlaylist(n); view = pl.id; render(); }
+    catch (err) { alert('No se pudo crear la lista.'); }
+  }, 'chip-new');
+  box.scrollLeft = sl;
+}
+
 function render() {
+  if (view !== 'all' && !plById(view)) view = 'all';
+  renderChips();
+  const pl = plById(view);
+  $('#plbar').classList.toggle('hidden', !pl);
+  if (pl) $('#plname').textContent = pl.name + ' (' + inView().length + ')';
+  const idx = inView();
   const ul = $('#list');
   ul.innerHTML = '';
-  tracks.forEach((t, i) => {
+  idx.forEach(i => {
+    const t = tracks[i];
     const li = document.createElement('li');
     const b = document.createElement('button');
     b.className = 'track';
     b.textContent = t.name;
     if (i === cur) b.setAttribute('aria-current', 'true');
-    b.onclick = () => play(i);
-    const d = document.createElement('button');
-    d.className = 'del';
-    d.setAttribute('aria-label', 'Borrar ' + t.name);
-    d.innerHTML = '<svg viewBox="0 0 24 24"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6zM19 4h-3.5l-1-1h-5l-1 1H5v2h14z"/></svg>';
-    d.onclick = () => remove(i);
+    b.onclick = () => { queue = idx.map(k => tracks[k].id); play(i); };
     li.appendChild(b);
-    li.appendChild(d);
+    li.appendChild(iconBtn('del addpl', 'Agregar ' + t.name + ' a una lista', P_PLUS, () => openSheet(t.id)));
+    li.appendChild(pl
+      ? iconBtn('del', 'Quitar ' + t.name + ' de esta lista', P_X, () => removeFromList(pl, t.id))
+      : iconBtn('del', 'Borrar ' + t.name, P_TRASH, () => remove(i)));
     ul.appendChild(li);
   });
-  $('#empty').classList.toggle('hidden', tracks.length > 0);
+  const e = $('#empty');
+  e.classList.toggle('hidden', idx.length > 0);
+  e.textContent = pl ? 'Esta lista está vacía. Usa el botón + en una canción para agregarla.' : 'Todavía no hay canciones en la lista.';
+}
+
+// Listas de reproducción
+async function createPlaylist(name) {
+  const rec = { name, songIds: [], created: Date.now() };
+  rec.id = await dbAdd(rec, PL);
+  playlists.push(rec);
+  return rec;
+}
+async function toggleInList(pl, id) {
+  const next = pl.songIds.includes(id) ? pl.songIds.filter(x => x !== id) : [...pl.songIds, id];
+  await dbPut({ ...pl, songIds: next });
+  pl.songIds = next;
+}
+async function removeFromList(pl, id) {
+  try {
+    const next = pl.songIds.filter(x => x !== id);
+    await dbPut({ ...pl, songIds: next });
+    pl.songIds = next;
+  } catch (err) { $('#sub').textContent = 'No se pudo quitar la canción de la lista.'; }
+  render();
+}
+async function purge(id) {
+  for (const pl of playlists) {
+    if (pl.songIds.includes(id)) {
+      try { const next = pl.songIds.filter(x => x !== id); await dbPut({ ...pl, songIds: next }); pl.songIds = next; } catch (err) {}
+    }
+  }
+}
+
+$('#pl-play').onclick = () => {
+  const idx = inView();
+  if (!idx.length) return;
+  queue = idx.map(k => tracks[k].id);
+  play(idx[0]);
+};
+$('#pl-rename').onclick = async () => {
+  const pl = plById(view);
+  if (!pl) return;
+  const n = nameOk(prompt('Nuevo nombre de la lista', pl.name));
+  if (!n || n === pl.name) return;
+  if (nameTaken(n, pl.id)) { alert('Ya existe una lista con ese nombre.'); return; }
+  try { await dbPut({ ...pl, name: n }); pl.name = n; } catch (err) { alert('No se pudo cambiar el nombre.'); }
+  render();
+};
+$('#pl-del').onclick = async () => {
+  const pl = plById(view);
+  if (!pl) return;
+  if (!confirm('¿Borrar la lista "' + pl.name + '"?\nLas canciones se quedan en tu biblioteca.')) return;
+  try { await dbDel(pl.id, PL); } catch (err) { alert('No se pudo borrar la lista.'); return; }
+  playlists = playlists.filter(p => p.id !== pl.id);
+  view = 'all';
+  render();
+};
+
+// Hoja para agregar una canción a listas
+const sheet = $('#sheet');
+function openSheet(trackId) {
+  sheetTrackId = trackId;
+  const t = tracks.find(x => x.id === trackId);
+  $('#sheet-song').textContent = t ? t.name : '';
+  renderSheet();
+  sheet.showModal();
+}
+function renderSheet() {
+  const box = $('#sheet-lists');
+  box.innerHTML = '';
+  if (!playlists.length) {
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = 'Todavía no tienes listas. Crea la primera aquí abajo.';
+    box.appendChild(p);
+  }
+  playlists.forEach(pl => {
+    const row = document.createElement('label');
+    row.className = 'pick';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = pl.songIds.includes(sheetTrackId);
+    cb.onchange = async () => {
+      try { await toggleInList(pl, sheetTrackId); }
+      catch (err) { cb.checked = !cb.checked; alert('No se pudo guardar el cambio.'); }
+      render();
+    };
+    const sp = document.createElement('span');
+    sp.textContent = pl.name;
+    row.appendChild(cb);
+    row.appendChild(sp);
+    box.appendChild(row);
+  });
+}
+$('#newbtn').onclick = async () => {
+  const n = nameOk($('#newname').value);
+  if (!n) return;
+  if (nameTaken(n)) { alert('Ya existe una lista con ese nombre.'); return; }
+  try {
+    const pl = await createPlaylist(n);
+    await toggleInList(pl, sheetTrackId);
+    $('#newname').value = '';
+  } catch (err) { alert('No se pudo crear la lista.'); }
+  renderSheet();
+  render();
+};
+$('#sheet-close').onclick = () => sheet.close();
+sheet.addEventListener('click', e => { if (e.target === sheet) sheet.close(); });
+
+// Siguiente / anterior respetan la lista que se está reproduciendo
+function step(d) {
+  if (!tracks.length) return;
+  let ids = queue.filter(id => tracks.some(t => t.id === id));
+  if (!ids.length) ids = tracks.map(t => t.id);
+  const curId = cur >= 0 ? tracks[cur].id : null;
+  let pos = ids.indexOf(curId);
+  pos = pos < 0 ? (d > 0 ? 0 : ids.length - 1) : (pos + d + ids.length) % ids.length;
+  play(tracks.findIndex(t => t.id === ids[pos]));
 }
 
 function setPlayingUI(on) {
@@ -241,6 +460,7 @@ async function remove(i) {
   try { await dbDel(t.id); }
   catch (err) { $('#sub').textContent = 'No se pudo borrar la canción.'; return; }
   URL.revokeObjectURL(t.url);
+  await purge(t.id);
   tracks.splice(i, 1);
   if (i === cur) {
     audio.pause(); audio.removeAttribute('src'); audio.load();
@@ -255,6 +475,7 @@ async function remove(i) {
 
 async function init() {
   try {
+    playlists = (await dbAll(PL)).map(p => ({ ...p, songIds: p.songIds || [] }));
     const rows = await dbAll();
     tracks = rows.map(r => ({ id: r.id, name: r.name, size: r.size, url: URL.createObjectURL(r.blob) }));
     if (tracks.length) $('#sub').textContent = 'Elige una canción de la lista.';
@@ -264,12 +485,12 @@ async function init() {
   render();
 }
 $('#play').onclick = toggle;
-$('#next').onclick = () => play(cur + 1);
-$('#prev').onclick = () => (audio.currentTime > 3 ? (audio.currentTime = 0) : play(cur - 1));
+$('#next').onclick = () => step(1);
+$('#prev').onclick = () => (audio.currentTime > 3 ? (audio.currentTime = 0) : step(-1));
 
 audio.onplay = () => setPlayingUI(true);
 audio.onpause = () => setPlayingUI(false);
-audio.onended = () => play(cur + 1);
+audio.onended = () => step(1);
 audio.onloadedmetadata = () => { $('#dur').textContent = fmt(audio.duration); };
 audio.ontimeupdate = () => {
   $('#cur').textContent = fmt(audio.currentTime);
@@ -285,8 +506,8 @@ if ('mediaSession' in navigator) {
   const ms = navigator.mediaSession;
   ms.setActionHandler('play', () => audio.play());
   ms.setActionHandler('pause', () => audio.pause());
-  ms.setActionHandler('previoustrack', () => play(cur - 1));
-  ms.setActionHandler('nexttrack', () => play(cur + 1));
+  ms.setActionHandler('previoustrack', () => step(-1));
+  ms.setActionHandler('nexttrack', () => step(1));
 }
 init();
 </script>
