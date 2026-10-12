@@ -44,7 +44,11 @@ button{font:inherit;color:inherit;cursor:pointer}
 .big svg{width:32px;height:32px}
 .add{display:block;width:100%;padding:14px;border-radius:12px;border:2px dashed var(--line);background:transparent;font-weight:600;margin-bottom:16px}
 ul{list-style:none;margin:0;padding:0}
-.track{display:block;width:100%;text-align:left;padding:12px 14px;border:0;border-bottom:1px solid var(--line);background:transparent;overflow-wrap:anywhere}
+li{display:flex;align-items:stretch;border-bottom:1px solid var(--line)}
+.track{display:block;flex:1;min-width:0;text-align:left;padding:12px 14px;border:0;background:transparent;overflow-wrap:anywhere}
+.del{flex:none;width:48px;border:0;background:transparent;color:var(--muted);display:grid;place-items:center}
+.del svg{width:22px;height:22px;fill:currentColor}
+.del:focus-visible{outline:3px solid var(--accent);outline-offset:-3px}
 .track[aria-current="true"]{background:var(--surface);font-weight:800;border-left:4px solid var(--accent)}
 .empty{color:var(--muted);text-align:center;margin:8px 0}
 .hidden{display:none}
@@ -80,6 +84,24 @@ const $ = s => document.querySelector(s);
 const audio = new Audio();
 let tracks = [], cur = -1;
 
+// Base de datos (IndexedDB): guarda las canciones en el celular
+const STORE = 'songs';
+let dbp;
+const db = () => dbp || (dbp = new Promise((res, rej) => {
+  const r = indexedDB.open('mi-reproductor', 1);
+  r.onupgradeneeded = () => r.result.createObjectStore(STORE, { keyPath: 'id', autoIncrement: true });
+  r.onsuccess = () => res(r.result);
+  r.onerror = () => rej(r.error);
+}));
+const run = async (mode, fn) => {
+  const d = await db();
+  const req = fn(d.transaction(STORE, mode).objectStore(STORE));
+  return new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
+};
+const dbAll = () => run('readonly', s => s.getAll());
+const dbAdd = rec => run('readwrite', s => s.add(rec));
+const dbDel = id => run('readwrite', s => s.delete(id));
+
 const ICON_PLAY = '<path d="M8 5v14l11-7z"/>';
 const ICON_PAUSE = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
 
@@ -100,7 +122,13 @@ function render() {
     b.textContent = t.name;
     if (i === cur) b.setAttribute('aria-current', 'true');
     b.onclick = () => play(i);
+    const d = document.createElement('button');
+    d.className = 'del';
+    d.setAttribute('aria-label', 'Borrar ' + t.name);
+    d.innerHTML = '<svg viewBox="0 0 24 24"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6zM19 4h-3.5l-1-1h-5l-1 1H5v2h14z"/></svg>';
+    d.onclick = () => remove(i);
     li.appendChild(b);
+    li.appendChild(d);
     ul.appendChild(li);
   });
   $('#empty').classList.toggle('hidden', tracks.length > 0);
@@ -133,13 +161,53 @@ function toggle() {
 }
 
 $('#add').onclick = () => $('#files').click();
-$('#files').onchange = e => {
-  const first = tracks.length;
-  for (const f of e.target.files) tracks.push({ name: clean(f.name), url: URL.createObjectURL(f) });
+$('#files').onchange = async e => {
+  const files = [...e.target.files];
   e.target.value = '';
+  const first = tracks.length;
+  for (const f of files) {
+    const name = clean(f.name);
+    if (tracks.some(t => t.name === name && t.size === f.size)) continue;
+    try {
+      const id = await dbAdd({ name, size: f.size, blob: f, added: Date.now() });
+      tracks.push({ id, name, size: f.size, url: URL.createObjectURL(f) });
+    } catch (err) {
+      $('#sub').textContent = 'No se pudo guardar "' + name + '". Puede que no haya espacio.';
+    }
+  }
   render();
-  if (cur < 0 && tracks.length) play(first);
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+  if (cur < 0 && tracks.length > first) play(first);
 };
+
+async function remove(i) {
+  const t = tracks[i];
+  if (!confirm('¿Borrar "' + t.name + '" de tu app?\nNo se borra de tu celular.')) return;
+  try { await dbDel(t.id); }
+  catch (err) { $('#sub').textContent = 'No se pudo borrar la canción.'; return; }
+  URL.revokeObjectURL(t.url);
+  tracks.splice(i, 1);
+  if (i === cur) {
+    audio.pause(); audio.removeAttribute('src'); audio.load();
+    cur = -1;
+    $('#title').textContent = 'Nada reproduciéndose';
+    $('#sub').textContent = tracks.length ? 'Elige una canción de la lista.' : 'Agrega canciones de tu celular para empezar.';
+    $('#bar').value = 0; $('#cur').textContent = '0:00'; $('#dur').textContent = '0:00';
+    setPlayingUI(false);
+  } else if (i < cur) cur--;
+  render();
+}
+
+async function init() {
+  try {
+    const rows = await dbAll();
+    tracks = rows.map(r => ({ id: r.id, name: r.name, size: r.size, url: URL.createObjectURL(r.blob) }));
+    if (tracks.length) $('#sub').textContent = 'Elige una canción de la lista.';
+  } catch (err) {
+    $('#sub').textContent = 'No se pudo abrir tu biblioteca guardada.';
+  }
+  render();
+}
 $('#play').onclick = toggle;
 $('#next').onclick = () => play(cur + 1);
 $('#prev').onclick = () => (audio.currentTime > 3 ? (audio.currentTime = 0) : play(cur - 1));
@@ -165,6 +233,7 @@ if ('mediaSession' in navigator) {
   ms.setActionHandler('previoustrack', () => play(cur - 1));
   ms.setActionHandler('nexttrack', () => play(cur + 1));
 }
+init();
 </script>
 </body>
 </html>
