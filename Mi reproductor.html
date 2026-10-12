@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mi reproductor</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#EDEBF5;--surface:#FFFFFF;--text:#1B1F3B;--muted:#5B6088;--accent:#E8890C;--on-accent:#1B1F3B;--line:#D5D3E6;
+  box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){--bg:#1B1F3B;--surface:#262B52;--text:#F1EEF8;--muted:#A3A8D0;--accent:#FFB703;--on-accent:#1B1F3B;--line:#363C70}
+}
+:root[data-theme="dark"]{--bg:#1B1F3B;--surface:#262B52;--text:#F1EEF8;--muted:#A3A8D0;--accent:#FFB703;--on-accent:#1B1F3B;--line:#363C70}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*,*::before,*::after{box-sizing:inherit}
+body{margin:0;background:var(--bg);color:var(--text);font-family:"Bricolage Grotesque",system-ui,sans-serif;min-height:100vh}
+main{max-width:520px;margin:0 auto;padding:20px 20px 40px}
+h1{font-size:1.1rem;font-weight:800;margin:0 0 24px}
+.disc{width:220px;height:220px;border-radius:50%;margin:0 auto 24px;position:relative;
+  background:repeating-radial-gradient(circle at center,#14172E 0 2px,#1E2342 2px 5px);
+  box-shadow:0 0 0 6px var(--surface)}
+.disc::after{content:"";position:absolute;inset:36%;border-radius:50%;background:var(--accent);
+  box-shadow:0 0 0 6px #14172E}
+.disc::before{content:"";position:absolute;left:50%;top:50%;width:10px;height:10px;margin:-5px 0 0 -5px;border-radius:50%;background:var(--bg);z-index:1}
+.playing .disc{animation:spin 6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){.playing .disc{animation:none}}
+#title{font-size:1.25rem;font-weight:800;text-align:center;margin:0 0 4px;overflow-wrap:anywhere}
+#sub{text-align:center;color:var(--muted);margin:0 0 20px;font-size:.9rem}
+.seek{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:.8rem;font-variant-numeric:tabular-nums}
+input[type=range]{flex:1;accent-color:var(--accent);height:28px}
+.controls{display:flex;justify-content:center;align-items:center;gap:20px;margin:12px 0 28px}
+button{font:inherit;color:inherit;cursor:pointer}
+.ic{width:48px;height:48px;border-radius:50%;border:0;background:transparent;display:grid;place-items:center}
+.ic svg{width:28px;height:28px;fill:currentColor}
+.ic:focus-visible,.add:focus-visible,.track:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.big{width:68px;height:68px;background:var(--accent);color:var(--on-accent)}
+.big svg{width:32px;height:32px}
+.add{display:block;width:100%;padding:14px;border-radius:12px;border:2px dashed var(--line);background:transparent;font-weight:600;margin-bottom:16px}
+ul{list-style:none;margin:0;padding:0}
+.track{display:block;width:100%;text-align:left;padding:12px 14px;border:0;border-bottom:1px solid var(--line);background:transparent;overflow-wrap:anywhere}
+.track[aria-current="true"]{background:var(--surface);font-weight:800;border-left:4px solid var(--accent)}
+.empty{color:var(--muted);text-align:center;margin:8px 0}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<main id="app">
+  <h1>Mi reproductor</h1>
+  <div class="disc" aria-hidden="true"></div>
+  <p id="title">Nada reproduciéndose</p>
+  <p id="sub">Agrega canciones de tu celular para empezar.</p>
+
+  <div class="seek">
+    <span id="cur">0:00</span>
+    <input id="bar" type="range" min="0" max="100" value="0" step="0.1" aria-label="Posición de la canción">
+    <span id="dur">0:00</span>
+  </div>
+
+  <div class="controls">
+    <button class="ic" id="prev" aria-label="Anterior"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zM20 6v12L9.5 12z"/></svg></button>
+    <button class="ic big" id="play" aria-label="Reproducir"><svg viewBox="0 0 24 24" id="playicon"><path d="M8 5v14l11-7z"/></svg></button>
+    <button class="ic" id="next" aria-label="Siguiente"><svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM4 6l10.5 6L4 18z"/></svg></button>
+  </div>
+
+  <button class="add" id="add">Agregar canciones</button>
+  <input id="files" type="file" accept="audio/*" multiple class="hidden">
+  <ul id="list"></ul>
+  <p class="empty" id="empty">Todavía no hay canciones en la lista.</p>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const audio = new Audio();
+let tracks = [], cur = -1;
+
+const ICON_PLAY = '<path d="M8 5v14l11-7z"/>';
+const ICON_PAUSE = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
+
+const fmt = t => {
+  if (!isFinite(t)) return '0:00';
+  const m = Math.floor(t / 60), s = Math.floor(t % 60);
+  return m + ':' + String(s).padStart(2, '0');
+};
+const clean = n => n.replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ');
+
+function render() {
+  const ul = $('#list');
+  ul.innerHTML = '';
+  tracks.forEach((t, i) => {
+    const li = document.createElement('li');
+    const b = document.createElement('button');
+    b.className = 'track';
+    b.textContent = t.name;
+    if (i === cur) b.setAttribute('aria-current', 'true');
+    b.onclick = () => play(i);
+    li.appendChild(b);
+    ul.appendChild(li);
+  });
+  $('#empty').classList.toggle('hidden', tracks.length > 0);
+}
+
+function setPlayingUI(on) {
+  $('#app').classList.toggle('playing', on);
+  $('#playicon').innerHTML = on ? ICON_PAUSE : ICON_PLAY;
+  $('#play').setAttribute('aria-label', on ? 'Pausar' : 'Reproducir');
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = on ? 'playing' : 'paused';
+}
+
+function play(i) {
+  if (!tracks.length) return;
+  cur = (i + tracks.length) % tracks.length;
+  const t = tracks[cur];
+  audio.src = t.url;
+  audio.play().catch(() => setPlayingUI(false));
+  $('#title').textContent = t.name;
+  $('#sub').textContent = 'Canción ' + (cur + 1) + ' de ' + tracks.length;
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({ title: t.name, artist: 'Mi música' });
+  }
+  render();
+}
+
+function toggle() {
+  if (cur < 0) return play(0);
+  audio.paused ? audio.play() : audio.pause();
+}
+
+$('#add').onclick = () => $('#files').click();
+$('#files').onchange = e => {
+  const first = tracks.length;
+  for (const f of e.target.files) tracks.push({ name: clean(f.name), url: URL.createObjectURL(f) });
+  e.target.value = '';
+  render();
+  if (cur < 0 && tracks.length) play(first);
+};
+$('#play').onclick = toggle;
+$('#next').onclick = () => play(cur + 1);
+$('#prev').onclick = () => (audio.currentTime > 3 ? (audio.currentTime = 0) : play(cur - 1));
+
+audio.onplay = () => setPlayingUI(true);
+audio.onpause = () => setPlayingUI(false);
+audio.onended = () => play(cur + 1);
+audio.onloadedmetadata = () => { $('#dur').textContent = fmt(audio.duration); };
+audio.ontimeupdate = () => {
+  $('#cur').textContent = fmt(audio.currentTime);
+  if (audio.duration) $('#bar').value = (audio.currentTime / audio.duration) * 100;
+};
+$('#bar').oninput = e => { if (audio.duration) audio.currentTime = (e.target.value / 100) * audio.duration; };
+
+if ('mediaSession' in navigator) {
+  const ms = navigator.mediaSession;
+  ms.setActionHandler('play', () => audio.play());
+  ms.setActionHandler('pause', () => audio.pause());
+  ms.setActionHandler('previoustrack', () => play(cur - 1));
+  ms.setActionHandler('nexttrack', () => play(cur + 1));
+}
+</script>
+</body>
+</html>
